@@ -3,7 +3,12 @@
 	import { onMount, onDestroy } from 'svelte';
 	import VerseDisplay from '$lib/VerseDisplay.svelte';
 	import TOC from '$lib/TOC.svelte';
-	import { fetchOnlineToc, handleLogout, bulkDeleteNotesFromSupabase } from '$lib/supabase';
+	import {
+		fetchOnlineToc,
+		handleLogout,
+		bulkDeleteNotesFromSupabase,
+		deleteHighlightFromSupabase
+	} from '$lib/supabase';
 	import { settings, writeSettings } from '$lib/store.svelte';
 	import { goto } from '$app/navigation';
 	import { db } from '$lib/db.js';
@@ -21,6 +26,7 @@
 		settingsVisible: false,
 		bookmarksVisible: false,
 		notesListVisible: false,
+		highlightsVisible: false,
 		overlayActive: '',
 		sidebarWidth: 300,
 		isResizing: false,
@@ -30,13 +36,25 @@
 		uiHidden: false,
 		bookmarks: [],
 		allNotes: [],
+		allHighlights: [],
 		isSelectionMode: false,
-		selectedNotes: new Set()
+		selectedNotes: new Set(),
+		viewingNote: null // <-- ADDED: To hold the note for the new popup viewer
 	});
 
-	// --- ALL FUNCTIONS ---
+	// --- NEW: Functions to handle the note viewer popup ---
+	function viewNote(note) {
+		state.viewingNote = note;
+		state.overlayActive = 'noteViewer'; // Use a unique overlay ID
+	}
 
-	// Rewritten function to be very explicit about state changes for reactivity.
+	function closeNoteViewer() {
+		state.viewingNote = null;
+		if (state.overlayActive === 'noteViewer') {
+			state.overlayActive = '';
+		}
+	}
+
 	function handleNoteSelection(noteUrl) {
 		const newSelectedNotes = new Set(state.selectedNotes);
 		if (newSelectedNotes.has(noteUrl)) {
@@ -45,6 +63,29 @@
 			newSelectedNotes.add(noteUrl);
 		}
 		state.selectedNotes = newSelectedNotes;
+	}
+
+	async function openHighlights() {
+		const all = await db.highlights.getAll();
+		state.allHighlights = all.sort((a, b) => b.timestamp - a.timestamp);
+		state.highlightsVisible = true;
+		state.overlayActive = 'highlights';
+	}
+
+	function navigateToHighlight(url) {
+		tocURL = url;
+		isCollection = false;
+		closeModal('highlights');
+	}
+
+	async function deleteHighlightFromList(id) {
+		await db.highlights.delete(id);
+		try {
+			await deleteHighlightFromSupabase({ id });
+		} catch (e) {
+			console.error('Failed to sync highlight deletion to server', e);
+		}
+		state.allHighlights = state.allHighlights.filter((h) => h.id !== id);
 	}
 
 	async function handleAuth() {
@@ -146,6 +187,20 @@
 		}
 	}
 
+	function zoomIn() {
+		if (settings.fontSize < 28) {
+			settings.fontSize++;
+			writeSettings();
+		}
+	}
+
+	function zoomOut() {
+		if (settings.fontSize > 12) {
+			settings.fontSize--;
+			writeSettings();
+		}
+	}
+
 	const performSearch = () => {
 		console.log('Search for:', state.searchQuery);
 		closeModal('search');
@@ -159,7 +214,8 @@
 			searchVisible: false,
 			settingsVisible: false,
 			bookmarksVisible: false,
-			notesListVisible: false
+			notesListVisible: false,
+			highlightsVisible: false
 		});
 	};
 
@@ -175,6 +231,10 @@
 		closeModal('settings');
 		closeModal('bookmarks');
 		closeModal('notesList');
+		closeModal('highlights');
+		if (state.viewingNote) {
+			closeNoteViewer();
+		}
 	};
 
 	const handleKeydown = (e) => {
@@ -188,21 +248,18 @@
 		state.isResizing = true;
 		document.body.style.cursor = 'ew-resize';
 	};
-
 	const handleMouseMove = (e) => {
 		if (state.isResizing) {
 			const w = e.clientX;
 			if (w > 200 && w < 600) state.sidebarWidth = w;
 		}
 	};
-
 	const handleMouseUp = () => {
 		if (state.isResizing) {
 			state.isResizing = false;
 			document.body.style.cursor = 'default';
 		}
 	};
-
 	const handleClickOutside = (e) => {
 		if (
 			state.sidebarVisible &&
@@ -272,21 +329,6 @@
 		});
 		return root;
 	}
-	function zoomIn() {
-	// Sets a maximum font size limit
-	if (settings.fontSize < 28) {
-		settings.fontSize++;
-		writeSettings(); 
-	}
-}
-
-function zoomOut() {
-	// Sets a minimum font size limit
-	if (settings.fontSize > 12) {
-		settings.fontSize--;
-		writeSettings();
-	}
-}
 </script>
 
 <div class="layout" class:ppt-mode={settings.mode === 'ppt'}>
@@ -364,58 +406,42 @@ function zoomOut() {
 	</div>
 
 	{#if !state.uiHidden}
-	<div class="bottom-bar-fixed">
-		<div class="bar-content">
-			<div class="bar-left"></div>
-
-			<div class="bar-center">
-				<button onclick={hideAll}>🙈<span class="label">Hide UI</span></button>
-				<button
-					onclick={() => {
-						if (tocURL) showNotePopup = true;
-					}}
-					title="Add/View Note for this page"
-					disabled={!tocURL}
-					>📝<span class="label">Page Note</span></button
-				>
-				<button onclick={openNotesList}>📚<span class="label">All Notes</span></button>
-			</div>
-
-			<div class="bar-right">
-				<div class="zoom-controls">
-					<button class="zoom-btn" onclick={zoomOut} title="Zoom Out">-</button>
-					<span class="zoom-level">{Math.round((settings.fontSize / 16) * 100)}%</span>
-					<button class="zoom-btn" onclick={zoomIn} title="Zoom In">+</button>
+		<div class="bottom-bar-fixed">
+			<div class="bar-content">
+				<div class="bar-left"></div>
+				<div class="bar-center">
+					<button onclick={hideAll}>🙈<span class="label">Hide UI</span></button>
+					<button
+						onclick={() => {
+							if (tocURL) showNotePopup = true;
+						}}
+						title="Add/View Note for this page"
+						disabled={!tocURL}
+						>📝<span class="label">Page Note</span></button
+					>
+					<button onclick={openNotesList}>📚<span class="label">All Notes</span></button>
+					<button onclick={openHighlights}>🖍️<span class="label">Highlights</span></button>
+				</div>
+				<div class="bar-right">
+					<div class="zoom-controls">
+						<button class="zoom-btn" onclick={zoomOut} title="Zoom Out">-</button>
+						<span class="zoom-level">{Math.round((settings.fontSize / 16) * 100)}%</span>
+						<button class="zoom-btn" onclick={zoomIn} title="Zoom In">+</button>
+					</div>
 				</div>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
 
 	{#if state.uiHidden}
 		<button class="floating-button" onclick={expandUI}>📖</button>
 	{/if}
 </div>
 
-<div class="overlay {state.overlayActive ? 'active' : ''}" onclick={handleOverlayClick}></div>
-
-<div class="modal-container {state.searchVisible ? 'active' : ''}">
-	<div class="modal-content">
-		<div class="modal-header">
-			<h2>Search</h2>
-		</div>
-		<div class="search-box">
-			<input
-				type="text"
-				placeholder="Enter search query..."
-				bind:value={state.searchQuery}
-				onkeydown={(e) => e.key === 'Enter' && performSearch()}
-			/>
-			<button class="modal-button" onclick={performSearch}>Search</button>
-		</div>
-		<button class="close-btn" onclick={() => closeModal('search')}>Close</button>
-	</div>
-</div>
+<div
+	class="overlay {state.overlayActive || state.viewingNote ? 'active' : ''}"
+	onclick={handleOverlayClick}
+></div>
 
 <div class="modal-container {state.settingsVisible ? 'active' : ''}">
 	<div class="modal-content">
@@ -436,7 +462,6 @@ function zoomOut() {
 					</label>
 				</div>
 			</div>
-
 			<div class="setting-group">
 				<h4>Font Size</h4>
 				<div class="slider-container">
@@ -541,13 +566,15 @@ function zoomOut() {
 								type="checkbox"
 								class="note-checkbox"
 								checked={state.selectedNotes.has(note.toc_url)}
-								aria-label="Select note for {note.title || note.toc_url}"
 							/>
 						{/if}
 						<div class="note-link">
 							<span class="note-title">{note.title || note.toc_url}</span>
 							<p class="note-preview">{note.text}</p>
 						</div>
+					</div>
+					<div class="note-item-actions">
+						<button class="action-btn read-note-btn" onclick={() => viewNote(note)}>Read</button>
 					</div>
 				</li>
 			{:else}
@@ -558,8 +585,58 @@ function zoomOut() {
 	</div>
 </div>
 
+<div class="modal-container {state.highlightsVisible ? 'active' : ''}">
+	</div>
+
+{#if state.viewingNote}
+	<div class="modal-container active" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-content">
+			<div class="modal-header">
+				<h2>{state.viewingNote.title || 'Note'}</h2>
+			</div>
+			<div class="note-viewer-body">
+				<p>{state.viewingNote.text}</p>
+			</div>
+			<button class="close-btn" onclick={closeNoteViewer}>Close</button>
+		</div>
+	</div>
+{/if}
+
 
 <style>
+	.note-item {
+		flex-direction: column; /* Allow full text to appear below */
+		align-items: stretch;
+	}
+
+	.expand-arrow {
+		background: transparent;
+		border: none;
+		color: var(--text-secondary-color);
+		font-size: 1.2rem;
+		padding: 0 0.5rem;
+		cursor: pointer;
+		transition: transform 0.2s ease-in-out;
+		align-self: flex-start;
+		margin-top: 0.8rem;
+	}
+
+	.expand-arrow.expanded {
+		transform: rotate(90deg);
+	}
+
+	.note-full-text {
+		padding: 0.5rem 1rem 1rem 3.5rem; /* Indent to align with note preview */
+		border-top: 1px solid var(--border-color);
+		margin-top: 0.5rem;
+	}
+
+	.note-full-text p {
+		white-space: pre-wrap; /* Respect line breaks in the note */
+		margin: 0;
+		line-height: 1.6;
+		color: var(--text-color);
+	}
 	:root {
 		--primary-color: #4a90e2;
 		--secondary-color: #50e3c2;
@@ -1107,5 +1184,43 @@ function zoomOut() {
 .zoom-btn:hover {
 	background-color: rgba(255, 255, 255, 0.4);
 	transform: none; 
+}
+/* all highlight button display */
+
+.highlight-item {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	margin-bottom: 0.75rem;
+	transition: background-color 0.2s;
+}
+
+.highlight-item:hover {
+	background-color: var(--toggle-hover-bg);
+}
+
+.highlight-content-wrapper {
+	flex-grow: 1;
+	cursor: pointer;
+	padding: 1rem;
+}
+
+.highlight-preview {
+	margin: 0 0 0.5rem 0;
+	font-style: italic;
+	color: var(--text-color);
+}
+
+.highlight-preview mark {
+	background-color: transparent;
+	color: inherit;
+}
+
+.highlight-location {
+	font-size: 0.8rem;
+	font-weight: 500;
+	color: var(--text-secondary-color);
 }
 </style>
