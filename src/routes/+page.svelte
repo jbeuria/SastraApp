@@ -42,6 +42,29 @@
 		viewingNote: null
 	});
 
+	function loadVoices() {
+		if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+		
+		const voices = window.speechSynthesis.getVoices();
+		if (voices.length > 0) {
+			settings.availableVoices = voices.filter(v => v.lang.startsWith('en'));
+
+			if (!settings.selectedVoiceURI || !voices.some(v => v.voiceURI === settings.selectedVoiceURI)) {
+				const femaleVoice = 
+					settings.availableVoices.find(v => v.name.includes('Female')) ||
+					settings.availableVoices.find(v => v.name.includes('Zira')) ||
+					settings.availableVoices.find(v => v.name.includes('Samantha')) ||
+					settings.availableVoices.find(v => v.lang === 'en-US');
+				
+				if (femaleVoice) {
+					settings.selectedVoiceURI = femaleVoice.voiceURI;
+				} else if (settings.availableVoices.length > 0) {
+					settings.selectedVoiceURI = settings.availableVoices[0].voiceURI;
+				}
+			}
+		}
+	}
+
 	function handleSearchResultNavigation(event) {
 		const { url } = event.detail;
 		tocURL = url;
@@ -109,7 +132,9 @@
 
 	const closeModal = (modalName) => {
 		state[`${modalName}Visible`] = false;
-		if (state.overlayActive === modalName) state.overlayActive = '';
+		if (state.overlayActive === modalName) {
+			state.overlayActive = '';
+		}
 	};
 
 	async function openBookmarks() {
@@ -155,7 +180,6 @@
 	async function deleteSelectedNotes() {
 		const urlsToDelete = Array.from(state.selectedNotes);
 		if (urlsToDelete.length === 0) return;
-
 		if (confirm(`Are you sure you want to delete ${urlsToDelete.length} selected note(s)?`)) {
 			await db.notes.bulkDelete(urlsToDelete);
 			state.allNotes = state.allNotes.filter((n) => !urlsToDelete.includes(n.toc_url));
@@ -173,16 +197,13 @@
 		if (confirm('DANGER: This will delete ALL of your notes permanently. Are you absolutely sure?')) {
 			const urlsToDelete = state.allNotes.map((note) => note.toc_url);
 			if (urlsToDelete.length === 0) return;
-
 			await db.notes.bulkDelete(urlsToDelete);
 			state.allNotes = [];
-
 			try {
 				await bulkDeleteNotesFromSupabase(urlsToDelete);
 			} catch (e) {
 				console.error("Failed to sync 'delete all' to the server.", e);
 			}
-
 			state.selectedNotes.clear();
 			state.isSelectionMode = false;
 		}
@@ -191,10 +212,13 @@
 	async function handleSettingsChange() {
 		await writeSettings();
 		document.body.className = `theme-${settings.theme}`;
-		if (settings.mode === 'ppt') {
-			hideAll();
-			closeModal('settings');
-		}
+	}
+
+	function enterPresentationMode() {
+		settings.mode = 'ppt';
+		handleSettingsChange();
+		hideAll();
+		closeModal('settings');
 	}
 
 	function zoomIn() {
@@ -228,6 +252,7 @@
 		state.uiHidden = false;
 		if (settings.mode === 'ppt') {
 			settings.mode = 'books';
+			writeSettings();
 		}
 	};
 
@@ -265,12 +290,14 @@
 			document.body.style.cursor = 'default';
 		}
 	};
+	
 	const handleClickOutside = (e) => {
 		if (
 			state.sidebarVisible &&
 			sidebarEl &&
 			!sidebarEl.contains(e.target) &&
-			(!toggleButtonEl || !toggleButtonEl.contains(e.target))
+			toggleButtonEl &&
+			!toggleButtonEl.contains(e.target)
 		) {
 			state.sidebarVisible = false;
 		}
@@ -282,30 +309,35 @@
 	}
 
 	onMount(async () => {
+		loadVoices();
+		if (typeof speechSynthesis !== 'undefined' && speechSynthesis.onvoiceschanged !== undefined) {
+			speechSynthesis.onvoiceschanged = loadVoices;
+		}
+
 		const handleResize = () => (windowWidth = window.innerWidth);
 		window.addEventListener('resize', handleResize);
 		handleResize();
-
-		const allTocData = await fetchOnlineToc();
-		settings.toc = Object.keys(allTocData).map((key, index) =>
-			buildHierarchy(allTocData[key], index, key)
-		);
-		handleSettingsChange();
 		window.addEventListener('mousemove', handleMouseMove);
 		window.addEventListener('mouseup', handleMouseUp);
 		document.addEventListener('click', handleClickOutside);
 		window.addEventListener('keydown', handleKeydown);
 
-		onDestroy(() => {
+		const allTocData = await fetchOnlineToc();
+		settings.toc = Object.keys(allTocData).map((key, index) =>
+			buildHierarchy(allTocData[key], index, key)
+		);
+		document.body.className = `theme-${settings.theme}`;
+		
+		return () => {
 			window.removeEventListener('resize', handleResize);
-		});
-	});
-
-	onDestroy(() => {
-		document.removeEventListener('click', handleClickOutside);
-		window.removeEventListener('mousemove', handleMouseMove);
-		window.removeEventListener('mouseup', handleMouseUp);
-		window.removeEventListener('keydown', handleKeydown);
+			window.removeEventListener('mousemove', handleMouseMove);
+			window.removeEventListener('mouseup', handleMouseUp);
+			document.removeEventListener('click', handleClickOutside);
+			window.removeEventListener('keydown', handleKeydown);
+			if (typeof speechSynthesis !== 'undefined') {
+				speechSynthesis.onvoiceschanged = null;
+			}
+		};
 	});
 
 	function buildHierarchy(data, id, code) {
@@ -462,51 +494,42 @@
 		<div class="modal-header">
 			<h2>Settings</h2>
 		</div>
-		<div class="setting-group-wrapper" onchange={handleSettingsChange}>
+		<div class="setting-group-wrapper">
 			<div class="setting-group">
 				<h4>View Mode</h4>
-				<div class="radio-group">
-					<label>
-						<input type="radio" bind:group={settings.mode} value="books" />
-						<span>Book View</span>
-					</label>
-					<label>
-						<input type="radio" bind:group={settings.mode} value="ppt" />
-						<span>Presentation</span>
-					</label>
+				<div class="radio-group" onchange={(e) => { if(e.target.value === 'books') { settings.mode = 'books'; handleSettingsChange(); }}}>
+					<label><input type="radio" name="view-mode" value="books" checked={settings.mode === 'books'} /> <span>Book View</span></label>
+					<label><input type="radio" name="view-mode" value="ppt" onchange={enterPresentationMode} /> <span>Presentation</span></label>
 				</div>
 			</div>
-			<div class="setting-group">
+			<div class="setting-group" onchange={handleSettingsChange}>
 				<h4>Font Size</h4>
 				<div class="slider-container">
 					<span class="font-size-label">A</span>
-					<input
-						type="range"
-						class="font-slider"
-						min="12"
-						max="28"
-						step="1"
-						bind:value={settings.fontSize}
-					/>
+					<input type="range" class="font-slider" min="12" max="28" step="1" bind:value={settings.fontSize} />
 					<span class="font-size-label large">A</span>
 					<span class="font-size-value">{settings.fontSize}px</span>
 				</div>
 			</div>
-			<div class="setting-group">
+			<div class="setting-group" onchange={handleSettingsChange}>
+				<h4>Speech Voice</h4>
+				{#if settings.availableVoices.length > 0}
+					<select class="voice-select" bind:value={settings.selectedVoiceURI}>
+						<option value={null}>Default</option>
+						{#each settings.availableVoices as voice (voice.voiceURI)}
+							<option value={voice.voiceURI}>{voice.name} ({voice.lang})</option>
+						{/each}
+					</select>
+				{:else}
+					<p>Loading voices...</p>
+				{/if}
+			</div>
+			<div class="setting-group" onchange={handleSettingsChange}>
 				<h4>Color Theme</h4>
 				<div class="radio-group">
-					<label>
-						<input type="radio" bind:group={settings.theme} value="light" />
-						<span>Light</span>
-					</label>
-					<label>
-						<input type="radio" bind:group={settings.theme} value="dark" />
-						<span>Dark</span>
-					</label>
-					<label>
-						<input type="radio" bind:group={settings.theme} value="reading" />
-						<span>Reading</span>
-					</label>
+					<label><input type="radio" bind:group={settings.theme} value="light" /> <span>Light</span></label>
+					<label><input type="radio" bind:group={settings.theme} value="dark" /> <span>Dark</span></label>
+					<label><input type="radio" bind:group={settings.theme} value="reading" /> <span>Reading</span></label>
 				</div>
 			</div>
 		</div>
@@ -529,9 +552,7 @@
 						class="delete-item-btn"
 						onclick={(e) => deleteBookmark(e, bookmark.url)}
 						title="Delete bookmark"
-					>
-						&times;
-					</button>
+					>&times;</button>
 				</li>
 			{:else}
 				<p class="empty-list-message">You haven't bookmarked any pages yet.</p>
@@ -547,17 +568,13 @@
 			<h2>All Notes</h2>
 			<div class="modal-actions">
 				{#if !state.isSelectionMode && state.allNotes.length > 0}
-					<button class="action-btn delete" onclick={deleteAllNotes} title="Delete all notes">
-						Delete All
-					</button>
+					<button class="action-btn delete" onclick={deleteAllNotes} title="Delete all notes">Delete All</button>
 				{/if}
 				<button class="action-btn" onclick={toggleSelectionMode}>
 					{#if state.isSelectionMode}Done{:else}Select{/if}
 				</button>
 				{#if state.isSelectionMode && state.selectedNotes.size > 0}
-					<button class="action-btn delete" onclick={deleteSelectedNotes}>
-						Delete ({state.selectedNotes.size})
-					</button>
+					<button class="action-btn delete" onclick={deleteSelectedNotes}>Delete ({state.selectedNotes.size})</button>
 				{/if}
 			</div>
 		</div>
@@ -572,11 +589,7 @@
 						}}
 					>
 						{#if state.isSelectionMode}
-							<input
-								type="checkbox"
-								class="note-checkbox"
-								checked={state.selectedNotes.has(note.toc_url)}
-							/>
+							<input type="checkbox" class="note-checkbox" checked={state.selectedNotes.has(note.toc_url)} />
 						{/if}
 						<div class="note-link">
 							<span class="note-title">{note.title || note.toc_url}</span>
@@ -584,15 +597,7 @@
 						</div>
 					</div>
 					<div class="note-item-actions">
-						<button
-							class="action-btn read-note-btn"
-							onclick={(e) => {
-								e.stopPropagation();
-								viewNote(note);
-							}}
-						>
-							Read
-						</button>
+						<button class="action-btn read-note-btn" onclick={(e) => { e.stopPropagation(); viewNote(note); }}>Read</button>
 					</div>
 				</li>
 			{:else}
@@ -618,16 +623,7 @@
 						<p class="highlight-preview">{@html `“${highlight.text}”`}</p>
 						<span class="highlight-location">From: {highlight.toc_url}</span>
 					</div>
-					<button
-						class="delete-item-btn"
-						onclick={(e) => {
-							e.stopPropagation();
-							deleteHighlightFromList(highlight.id);
-						}}
-						title="Delete highlight"
-					>
-						&times;
-					</button>
+					<button class="delete-item-btn" onclick={(e) => { e.stopPropagation(); deleteHighlightFromList(highlight.id);}} title="Delete highlight">&times;</button>
 				</li>
 			{:else}
 				<p class="empty-list-message">You haven't created any highlights yet.</p>
@@ -650,7 +646,6 @@
 		</div>
 	</div>
 {/if}
-
 
 <style>
 	:root {
@@ -996,6 +991,9 @@
 		overflow-y: auto;
 		flex-grow: 1;
 	}
+	.setting-group-wrapper {
+		padding: 0 2rem;
+	}
 	.setting-group {
 		margin-top: 0.5rem;
 	}
@@ -1111,9 +1109,7 @@
 		font-size: 1rem;
 		border-radius: 8px;
 		cursor: pointer;
-		transition:
-			background-color 0.2s,
-			color 0.2s;
+		transition: background-color 0.2s, color 0.2s;
 		margin: 1rem 2rem;
 		align-self: flex-end;
 		flex-shrink: 0;
@@ -1224,5 +1220,14 @@
 		flex-grow: 1;
 		white-space: pre-wrap;
 		line-height: 1.6;
+	}
+	.voice-select {
+		width: 100%;
+		padding: 0.5rem;
+		border-radius: 6px;
+		border: 1px solid var(--border-color);
+		background-color: var(--bg-color);
+		color: var(--text-color);
+		font-size: 1rem;
 	}
 </style>
