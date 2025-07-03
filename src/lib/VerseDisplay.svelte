@@ -34,12 +34,9 @@
 	let showPptSettings = $state(false);
 	let windowSize = $state({ width: 0, height: 0 });
 
-	// --- NEW: Helper function to expand a selection range to whole words ---
 	function expandRangeToWordBoundaries(range) {
-		// Define what counts as a word character (letters and numbers)
 		const isWordChar = (char) => /[a-zA-Z0-9]/.test(char);
 
-		// Expand the start of the selection backwards
 		if (range.startContainer.nodeType === Node.TEXT_NODE) {
 			let offset = range.startOffset;
 			while (offset > 0 && isWordChar(range.startContainer.textContent[offset - 1])) {
@@ -48,7 +45,6 @@
 			range.setStart(range.startContainer, offset);
 		}
 
-		// Expand the end of the selection forwards
 		if (range.endContainer.nodeType === Node.TEXT_NODE) {
 			let offset = range.endOffset;
 			while (
@@ -63,17 +59,21 @@
 		return range;
 	}
 
-
-	// --- EDITED: handleContentClick now uses the new expander function ---
+	// EDITED: This function is now updated to correctly hide the popup.
 	function handleContentClick(event) {
-		// 1. Check if the user clicked on an existing highlight to delete it.
+		// 1. If the click is on the popup button itself, let the button's own logic handle it.
+		if (event.target.closest('.action-bubble')) {
+			return;
+		}
+		
+		// 2. Check if the user clicked on an existing highlight to delete it.
 		if (event.target.tagName === 'MARK') {
 			const highlightHtml = event.target.innerHTML;
 			const clickedHighlight = highlights.find((h) => h.text === highlightHtml);
 
 			if (clickedHighlight) {
 				highlightToDelete = clickedHighlight;
-				currentSelection = null; // Ensures the "Delete" button will show.
+				currentSelection = null;
 				const rect = event.target.getBoundingClientRect();
 				popupCoords = { x: rect.left + rect.width / 2, y: rect.top };
 				showKrishnaPopup = true;
@@ -81,21 +81,15 @@
 			}
 		}
 
-		// 2. If not a highlight, check if the user is creating a new selection.
+		// 3. Check for creating a new selection, or hide the popup if selection is lost.
 		setTimeout(() => {
-			if (showKrishnaPopup) return;
-
 			const selection = window.getSelection();
 			if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) {
 				let range = selection.getRangeAt(0);
 
-				// --- THIS IS THE NEW LOGIC ---
-				// Expand the range to cover whole words.
 				range = expandRangeToWordBoundaries(range);
-				// Update the user's visible selection to show the expanded range.
 				selection.removeAllRanges();
 				selection.addRange(range);
-				// --- END OF NEW LOGIC ---
 
 				currentSelection = range;
 				highlightToDelete = null;
@@ -103,10 +97,13 @@
 				popupCoords = { x: rect.left + rect.width / 2, y: rect.top };
 				showKrishnaPopup = true;
 			} else {
+				// This is the key change: If there is no active text selection
+				// after the click, hide the popup.
 				showKrishnaPopup = false;
 			}
 		}, 50);
 	}
+
 
 	async function createHighlight() {
 		if (!currentSelection) return;
@@ -163,7 +160,6 @@
 		return highlightedText;
 	}
 
-	// --- Other functions remain unchanged ---
 	function handleVcToggle(key) {
 		if (settings.vc[key] === true) {
 			const checkedCount = Object.values(settings.vc).filter(Boolean).length;
@@ -496,7 +492,7 @@
 	:global(mark.highlighted-text) {
 		background-color: #f7e772;
 		color: #333;
-		cursor: pointer; /* Add a pointer to show it's clickable */
+		cursor: pointer;
 	}
 
 	@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Lora:ital,wght@0,400;1,400&display=swap');
@@ -739,9 +735,7 @@
 		padding: 0.25rem;
 		font-size: 1.5rem;
 		color: var(--text-secondary-color);
-		transition:
-			color 0.2s,
-			transform 0.2s;
+		transition: color 0.2s, transform 0.2s;
 	}
 	.icon-btn:hover {
 		color: var(--primary-color);
@@ -854,9 +848,7 @@
 		font-weight: 500;
 		font-size: 0.9rem;
 		cursor: pointer;
-		transition:
-			background-color 0.2s,
-			transform 0.2s;
+		transition: background-color 0.2s, transform 0.2s;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -865,6 +857,8 @@
 		background-color: var(--secondary-color);
 		transform: scale(1.05);
 	}
+
+	/* --- EDITED: Styles for the Page Note Popup --- */
 	.note-popup-overlay {
 		position: fixed;
 		top: 0;
@@ -875,41 +869,52 @@
 		display: flex;
 		justify-content: center;
 		align-items: center;
+		z-index: 2000; /* Ensure it's above other elements */
 		backdrop-filter: blur(4px);
 	}
 	.note-popup {
 		background: var(--popup-bg);
 		color: var(--popup-text);
-		padding: 2rem;
+		padding: 1.5rem;
 		border-radius: 12px;
 		width: 90%;
 		max-width: 600px;
+		height: 60vh; /* Set a height relative to the viewport */
 		box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
+		display: flex; /* Use flexbox for alignment */
+		flex-direction: column; /* Stack children vertically */
+		gap: 1rem; /* Add space between elements */
 	}
 	.note-popup h3 {
-		margin-top: 0;
-		margin-bottom: 1rem;
+		margin: 0;
+		padding-bottom: 1rem;
+		border-bottom: 1px solid var(--border-color);
+		text-align: center; /* Center the title */
 		font-family: var(--sans-font);
 		color: var(--primary-color);
+		flex-shrink: 0; /* Prevent header from shrinking */
 	}
 	.note-popup textarea {
 		width: 100%;
-		height: 250px;
+		flex-grow: 1; /* Allow textarea to fill available space */
+		min-height: 150px; /* Ensure a minimum usable height */
 		padding: 1rem;
 		font-size: 1rem;
 		font-family: var(--sans-font);
 		border: 1px solid var(--border-color);
 		border-radius: 8px;
-		resize: vertical;
+		resize: none; /* Disable resizing for a cleaner layout */
 		background: var(--bg-color);
 		color: var(--popup-text);
 		line-height: 1.6;
+		box-sizing: border-box; /* Ensure padding is included in width */
 	}
 	.popup-actions {
-		margin-top: 1rem;
+		margin-top: auto; /* Push buttons to the bottom */
 		display: flex;
 		justify-content: flex-end;
 		gap: 1rem;
+		flex-shrink: 0; /* Prevent footer from shrinking */
 	}
 	.popup-btn {
 		border: none;

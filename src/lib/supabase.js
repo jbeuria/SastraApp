@@ -2,7 +2,6 @@
 import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
 
-// Replace with your actual Supabase project URL and anon key
 const supabaseUrl = 'https://bhgzxsnbuhkzwaoiknuj.supabase.co';
 const supabaseKey =
 	'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoZ3p4c25idWhrendhb2lrbnVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzYwNTU1NjAsImV4cCI6MjA1MTYzMTU2MH0.8bMvTq27K3njcenyeXJ3pbBuzVFaUtGAI-h13px0rDw';
@@ -115,6 +114,44 @@ export const fetchOnlineBookContent = async (code, url, isCollection) => {
 		console.log(e);
 		return [];
 	}
+};
+export const searchBook = async (bookCode, query) => {
+	if (!bookCode || !query) {
+		return [];
+	}
+
+	
+	const { data, error } = await supabase
+		.from(bookCode)
+		.select('verse_url, eng_translation, purport')
+		.or(`eng_translation.ilike.%${query}%,purport.ilike.%${query}%`);
+
+	if (error) {
+		console.error('Error performing search:', error);
+		return [];
+	}
+
+	
+	const createSnippet = (text, query) => {
+		if (!text) return '';
+		const index = text.toLowerCase().indexOf(query.toLowerCase());
+		if (index === -1) return text.slice(0, 100) + '...';
+		const start = Math.max(0, index - 30);
+		const end = Math.min(text.length, index + query.length + 70);
+		let snippet = text.substring(start, end);
+		if (start > 0) snippet = '...' + snippet;
+		if (end < text.length) snippet = snippet + '...';
+		// Highlight the query in the snippet
+		snippet = snippet.replace(new RegExp(`(${query})`, 'gi'), '<mark>$1</mark>');
+		return snippet;
+	};
+
+	return data.map((item) => ({
+		...item,
+		snippet: item.eng_translation?.toLowerCase().includes(query.toLowerCase())
+			? createSnippet(item.eng_translation, query)
+			: createSnippet(item.purport, query)
+	}));
 };
 
 // --- User Data Sync (Highlights & Notes) ---

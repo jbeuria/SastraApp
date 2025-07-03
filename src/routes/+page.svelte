@@ -3,6 +3,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import VerseDisplay from '$lib/VerseDisplay.svelte';
 	import TOC from '$lib/TOC.svelte';
+	import SearchPane from '$lib/SearchPane.svelte';
 	import {
 		fetchOnlineToc,
 		handleLogout,
@@ -19,10 +20,11 @@
 	let isCollection = $state(false);
 	let tocURL = $state('');
 	let showNotePopup = $state(false);
+	let windowWidth = $state(0);
 
 	const state = $state({
 		sidebarVisible: false,
-		searchVisible: false,
+		searchPaneVisible: false,
 		settingsVisible: false,
 		bookmarksVisible: false,
 		notesListVisible: false,
@@ -31,21 +33,29 @@
 		sidebarWidth: 300,
 		isResizing: false,
 		toc: [],
-		searchQuery: '',
-		results: [],
 		uiHidden: false,
 		bookmarks: [],
 		allNotes: [],
 		allHighlights: [],
 		isSelectionMode: false,
 		selectedNotes: new Set(),
-		viewingNote: null // <-- ADDED: To hold the note for the new popup viewer
+		viewingNote: null
 	});
 
-	// --- NEW: Functions to handle the note viewer popup ---
+	function handleSearchResultNavigation(event) {
+		const { url } = event.detail;
+		tocURL = url;
+		isCollection = false;
+		state.searchPaneVisible = false;
+	}
+
+	function toggleSearchPane() {
+		state.searchPaneVisible = !state.searchPaneVisible;
+	}
+
 	function viewNote(note) {
 		state.viewingNote = note;
-		state.overlayActive = 'noteViewer'; // Use a unique overlay ID
+		state.overlayActive = 'noteViewer';
 	}
 
 	function closeNoteViewer() {
@@ -201,17 +211,12 @@
 		}
 	}
 
-	const performSearch = () => {
-		console.log('Search for:', state.searchQuery);
-		closeModal('search');
-	};
-
 	const hideAll = () => {
 		Object.assign(state, {
 			uiHidden: true,
 			sidebarVisible: false,
+			searchPaneVisible: false,
 			overlayActive: '',
-			searchVisible: false,
 			settingsVisible: false,
 			bookmarksVisible: false,
 			notesListVisible: false,
@@ -227,7 +232,6 @@
 	};
 
 	const handleOverlayClick = () => {
-		closeModal('search');
 		closeModal('settings');
 		closeModal('bookmarks');
 		closeModal('notesList');
@@ -241,6 +245,7 @@
 		if (e.key === 'Escape') {
 			handleOverlayClick();
 			if (state.sidebarVisible) state.sidebarVisible = false;
+			if (state.searchPaneVisible) state.searchPaneVisible = false;
 		}
 	};
 
@@ -277,6 +282,10 @@
 	}
 
 	onMount(async () => {
+		const handleResize = () => (windowWidth = window.innerWidth);
+		window.addEventListener('resize', handleResize);
+		handleResize();
+
 		const allTocData = await fetchOnlineToc();
 		settings.toc = Object.keys(allTocData).map((key, index) =>
 			buildHierarchy(allTocData[key], index, key)
@@ -286,6 +295,10 @@
 		window.addEventListener('mouseup', handleMouseUp);
 		document.addEventListener('click', handleClickOutside);
 		window.addEventListener('keydown', handleKeydown);
+
+		onDestroy(() => {
+			window.removeEventListener('resize', handleResize);
+		});
 	});
 
 	onDestroy(() => {
@@ -345,13 +358,7 @@
 					</button>
 				</div>
 				<div class="bar-right">
-					<button
-						onclick={() => {
-							state.searchVisible = true;
-							state.overlayActive = 'search';
-						}}
-						>🔍<span class="label">Search</span></button
-					>
+					<button onclick={toggleSearchPane}>🔍<span class="label">Search</span></button>
 					<button onclick={openBookmarks}>🔖<span class="label">Bookmarks</span></button>
 					<button onclick={handleAuth}>
 						{#if data.user}
@@ -386,7 +393,8 @@
 
 		<div
 			class="main-content"
-			class:sidebar-pushed={state.sidebarVisible && window.innerWidth > 768 && !state.uiHidden}
+			class:sidebar-pushed={state.sidebarVisible && windowWidth > 768 && !state.uiHidden}
+			class:search-pushed={state.searchPaneVisible}
 		>
 			{#if tocURL && tocURL.length > 0}
 				{#key tocURL}
@@ -403,6 +411,12 @@
 				</div>
 			{/if}
 		</div>
+
+		<SearchPane
+			bind:visible={state.searchPaneVisible}
+			bookCode={settings.code}
+			on:navigate={handleSearchResultNavigation}
+		/>
 	</div>
 
 	{#if !state.uiHidden}
@@ -549,11 +563,7 @@
 		</div>
 		<ul class="list-container">
 			{#each state.allNotes as note (note.toc_url)}
-				<li
-					class="note-item"
-					class:selectable={state.isSelectionMode}
-					class:selected={state.selectedNotes.has(note.toc_url)}
-				>
+				<li class="note-item">
 					<div
 						class="note-content-wrapper"
 						onclick={() => {
@@ -574,7 +584,15 @@
 						</div>
 					</div>
 					<div class="note-item-actions">
-						<button class="action-btn read-note-btn" onclick={() => viewNote(note)}>Read</button>
+						<button
+							class="action-btn read-note-btn"
+							onclick={(e) => {
+								e.stopPropagation();
+								viewNote(note);
+							}}
+						>
+							Read
+						</button>
 					</div>
 				</li>
 			{:else}
@@ -586,7 +604,38 @@
 </div>
 
 <div class="modal-container {state.highlightsVisible ? 'active' : ''}">
+	<div class="modal-content">
+		<div class="modal-header">
+			<h2>All Highlights</h2>
+		</div>
+		<ul class="list-container">
+			{#each state.allHighlights as highlight (highlight.id)}
+				<li class="highlight-item">
+					<div
+						class="highlight-content-wrapper"
+						onclick={() => navigateToHighlight(highlight.toc_url)}
+					>
+						<p class="highlight-preview">{@html `“${highlight.text}”`}</p>
+						<span class="highlight-location">From: {highlight.toc_url}</span>
+					</div>
+					<button
+						class="delete-item-btn"
+						onclick={(e) => {
+							e.stopPropagation();
+							deleteHighlightFromList(highlight.id);
+						}}
+						title="Delete highlight"
+					>
+						&times;
+					</button>
+				</li>
+			{:else}
+				<p class="empty-list-message">You haven't created any highlights yet.</p>
+			{/each}
+		</ul>
+		<button class="close-btn" onclick={() => closeModal('highlights')}>Close</button>
 	</div>
+</div>
 
 {#if state.viewingNote}
 	<div class="modal-container active" onclick={(e) => e.stopPropagation()}>
@@ -604,39 +653,6 @@
 
 
 <style>
-	.note-item {
-		flex-direction: column; /* Allow full text to appear below */
-		align-items: stretch;
-	}
-
-	.expand-arrow {
-		background: transparent;
-		border: none;
-		color: var(--text-secondary-color);
-		font-size: 1.2rem;
-		padding: 0 0.5rem;
-		cursor: pointer;
-		transition: transform 0.2s ease-in-out;
-		align-self: flex-start;
-		margin-top: 0.8rem;
-	}
-
-	.expand-arrow.expanded {
-		transform: rotate(90deg);
-	}
-
-	.note-full-text {
-		padding: 0.5rem 1rem 1rem 3.5rem; /* Indent to align with note preview */
-		border-top: 1px solid var(--border-color);
-		margin-top: 0.5rem;
-	}
-
-	.note-full-text p {
-		white-space: pre-wrap; /* Respect line breaks in the note */
-		margin: 0;
-		line-height: 1.6;
-		color: var(--text-color);
-	}
 	:root {
 		--primary-color: #4a90e2;
 		--secondary-color: #50e3c2;
@@ -732,9 +748,47 @@
 		align-items: center;
 		gap: 0.5rem;
 	}
-	.bottom-bar-fixed .bar-content {
-		justify-content: center;
+	.bar-center {
+		display: flex;
 		gap: 2rem;
+		justify-content: center;
+	}
+	.zoom-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		background-color: rgba(0, 0, 0, 0.1);
+		padding: 4px 8px;
+		border-radius: 20px;
+	}
+	.zoom-level {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: white;
+		min-width: 40px;
+		text-align: center;
+		user-select: none;
+	}
+	.zoom-btn {
+		background-color: rgba(255, 255, 255, 0.2);
+		color: white;
+		border: none;
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		font-size: 1.5rem;
+		font-weight: bold;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		line-height: 1;
+		cursor: pointer;
+		transition: background-color 0.2s;
+	}
+	.zoom-btn:hover {
+		background-color: rgba(255, 255, 255, 0.4);
+		transform: none;
 	}
 	button {
 		background: transparent;
@@ -809,10 +863,13 @@
 	.main-content {
 		flex-grow: 1;
 		overflow-y: auto;
-		transition: margin-left 0.3s ease;
+		transition: margin-left 0.3s ease, margin-right 0.3s ease-in-out;
 	}
 	.main-content.sidebar-pushed {
 		margin-left: var(--sidebar-width, 300px);
+	}
+	.main-content.search-pushed {
+		margin-right: 350px;
 	}
 	.full-space {
 		height: 100%;
@@ -939,10 +996,6 @@
 		overflow-y: auto;
 		flex-grow: 1;
 	}
-	.search-box,
-	.setting-group-wrapper {
-		padding: 0 2rem;
-	}
 	.setting-group {
 		margin-top: 0.5rem;
 	}
@@ -986,8 +1039,8 @@
 		margin-bottom: 0.5rem;
 		transition: background-color 0.2s;
 	}
-	.bookmark-item:hover,
-	.note-item:hover {
+	.note-item:hover,
+	.bookmark-item:hover {
 		background-color: var(--toggle-hover-bg);
 	}
 	.bookmark-item a {
@@ -1004,7 +1057,7 @@
 		gap: 1rem;
 		flex-grow: 1;
 		cursor: pointer;
-		padding: 1rem 0 1rem 1rem;
+		padding: 1rem;
 	}
 	.delete-item-btn {
 		color: var(--text-secondary-color);
@@ -1022,6 +1075,7 @@
 		width: 18px;
 		height: 18px;
 		accent-color: var(--primary-color);
+		margin-right: 1rem;
 	}
 	.note-link {
 		flex-grow: 1;
@@ -1070,157 +1124,105 @@
 		border-color: var(--primary-color);
 		transform: none;
 	}
-
-.slider-container {
-	display: flex;
-	align-items: center;
-	gap: 1rem;
-	padding: 1rem 0;
-}
-
-.font-slider {
-	flex-grow: 1;
-	-webkit-appearance: none;
-	appearance: none;
-	width: 100%;
-	height: 8px;
-	background: var(--border-color);
-	border-radius: 5px;
-	outline: none;
-	opacity: 0.7;
-	transition: opacity 0.2s;
-}
-
-.font-slider:hover {
-	opacity: 1;
-}
-
-.font-slider::-webkit-slider-thumb {
-	-webkit-appearance: none;
-	appearance: none;
-	width: 20px;
-	height: 20px;
-	background: var(--primary-color);
-	cursor: pointer;
-	border-radius: 50%;
-}
-
-.font-slider::-moz-range-thumb {
-	width: 20px;
-	height: 20px;
-	background: var(--primary-color);
-	cursor: pointer;
-	border-radius: 50%;
-}
-
-.font-size-label {
-	font-size: 1rem;
-	font-weight: bold;
-	color: var(--text-secondary-color);
-}
-
-.font-size-label.large {
-	font-size: 1.5rem;
-}
-
-.font-size-value {
-    min-width: 45px;
-    text-align: center;
-    font-weight: 500;
-    color: var(--text-color);
-    background-color: var(--pane-bg-color);
-    padding: 0.2rem 0.5rem;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-}
-/* page zoom in and zoom out settings */
-
-.bottom-bar-fixed .bar-content {
-	justify-content: space-between;
-}
-
-.bar-center {
-	display: flex;
-	gap: 2rem;
-	justify-content: center;
-}
-
-.zoom-controls {
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	background-color: rgba(0, 0, 0, 0.1);
-	padding: 4px 8px;
-	border-radius: 20px;
-}
-
-.zoom-level {
-	font-size: 0.8rem;
-	font-weight: 600;
-	color: white;
-	min-width: 40px;
-	text-align: center;
-	user-select: none;
-}
-
-.zoom-btn {
-	background-color: rgba(255, 255, 255, 0.2);
-	color: white;
-	border: none;
-	width: 28px;
-	height: 28px;
-	border-radius: 50%;
-	font-size: 1.5rem;
-	font-weight: bold;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 0;
-	line-height: 1;
-	cursor: pointer;
-	transition: background-color 0.2s;
-}
-
-.zoom-btn:hover {
-	background-color: rgba(255, 255, 255, 0.4);
-	transform: none; 
-}
-/* all highlight button display */
-
-.highlight-item {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	border: 1px solid var(--border-color);
-	border-radius: 8px;
-	margin-bottom: 0.75rem;
-	transition: background-color 0.2s;
-}
-
-.highlight-item:hover {
-	background-color: var(--toggle-hover-bg);
-}
-
-.highlight-content-wrapper {
-	flex-grow: 1;
-	cursor: pointer;
-	padding: 1rem;
-}
-
-.highlight-preview {
-	margin: 0 0 0.5rem 0;
-	font-style: italic;
-	color: var(--text-color);
-}
-
-.highlight-preview mark {
-	background-color: transparent;
-	color: inherit;
-}
-
-.highlight-location {
-	font-size: 0.8rem;
-	font-weight: 500;
-	color: var(--text-secondary-color);
-}
+	.slider-container {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		padding: 1rem 0;
+	}
+	.font-slider {
+		flex-grow: 1;
+		-webkit-appearance: none;
+		appearance: none;
+		width: 100%;
+		height: 8px;
+		background: var(--border-color);
+		border-radius: 5px;
+		outline: none;
+		opacity: 0.7;
+		transition: opacity 0.2s;
+	}
+	.font-slider:hover {
+		opacity: 1;
+	}
+	.font-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 20px;
+		height: 20px;
+		background: var(--primary-color);
+		cursor: pointer;
+		border-radius: 50%;
+	}
+	.font-slider::-moz-range-thumb {
+		width: 20px;
+		height: 20px;
+		background: var(--primary-color);
+		cursor: pointer;
+		border-radius: 50%;
+	}
+	.font-size-label {
+		font-size: 1rem;
+		font-weight: bold;
+		color: var(--text-secondary-color);
+	}
+	.font-size-label.large {
+		font-size: 1.5rem;
+	}
+	.font-size-value {
+		min-width: 45px;
+		text-align: center;
+		font-weight: 500;
+		color: var(--text-color);
+		background-color: var(--pane-bg-color);
+		padding: 0.2rem 0.5rem;
+		border-radius: 6px;
+		border: 1px solid var(--border-color);
+	}
+	.highlight-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		border: 1px solid var(--border-color);
+		border-radius: 8px;
+		margin-bottom: 0.75rem;
+		transition: background-color 0.2s;
+	}
+	.highlight-item:hover {
+		background-color: var(--toggle-hover-bg);
+	}
+	.highlight-content-wrapper {
+		flex-grow: 1;
+		cursor: pointer;
+		padding: 1rem;
+	}
+	.highlight-preview {
+		margin: 0 0 0.5rem 0;
+		font-style: italic;
+		color: var(--text-color);
+	}
+	.highlight-preview mark {
+		background-color: transparent;
+		color: inherit;
+	}
+	.highlight-location {
+		font-size: 0.8rem;
+		font-weight: 500;
+		color: var(--text-secondary-color);
+	}
+	.note-item-actions {
+		padding-right: 1rem;
+		align-self: center;
+	}
+	.read-note-btn {
+		padding: 0.3rem 0.6rem;
+		font-size: 0.8rem;
+	}
+	.note-viewer-body {
+		padding: 0.5rem 2rem 1rem;
+		overflow-y: auto;
+		flex-grow: 1;
+		white-space: pre-wrap;
+		line-height: 1.6;
+	}
 </style>
