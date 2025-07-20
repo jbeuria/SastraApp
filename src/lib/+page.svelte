@@ -35,7 +35,7 @@
       closeSearch();
     };
   
-    const handleSearchKey = (e) => {
+    const handleSearchKey = () => {
       if (e.key === 'Enter') {
         performSearch();
       }
@@ -51,20 +51,20 @@
       else if (overlayActive === 'sidebar') closeSidebar();
     };
   
-    const setMode = (e) => console.log("Mode set to", e.target.value);
+    const setMode = () => console.log("Mode set to", e.target.value);
     const login = () => alert("Login clicked");
     const openSettings = () => alert("Settings clicked");
     const hideAll = () => alert("Hide All clicked");
     const openNotes = () => alert("Notes clicked");
     const openLast = () => alert("Last Opened clicked");
   
-    const handleMouseDown = (e) => {
+    const handleMouseDown = () => {
       if (window.innerWidth <= 600) return;
       isResizing = true;
       document.body.style.cursor = 'ew-resize';
     };
   
-    const handleMouseMove = (e) => {
+    const handleMouseMove = () => {
       if (!isResizing) return;
       const newWidth = e.clientX;
       if (newWidth > 150 && newWidth < 500) sidebarWidth = newWidth;
